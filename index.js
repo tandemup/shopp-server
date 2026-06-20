@@ -11,7 +11,7 @@ const CLIENT_ORIGINS = [
   "http://localhost:8081",
   "http://localhost:19006",
   "http://localhost:3000",
-  "https://TU-APP-NETLIFY.netlify.app",
+  "https://ramworks.netlify.app",
 ];
 
 app.use(
