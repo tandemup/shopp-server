@@ -1,19 +1,42 @@
+// db.js
 require("dotenv").config();
 
 const { Pool } = require("pg");
 
-if (!process.env.DATABASE_URL) {
-  console.error("Falta DATABASE_URL en las variables de entorno");
-  process.exit(1);
-}
+const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl:
-    process.env.DATABASE_URL.includes("localhost") ||
-    process.env.DATABASE_URL.includes("127.0.0.1")
-      ? false
-      : { rejectUnauthorized: false },
+  ssl: isProduction
+    ? {
+        rejectUnauthorized: false,
+      }
+    : false,
 });
 
-module.exports = pool;
+async function query(text, params) {
+  return pool.query(text, params);
+}
+
+async function initDb() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id SERIAL PRIMARY KEY,
+      room TEXT NOT NULL,
+      username TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created_at
+    ON chat_messages (room, created_at DESC);
+  `);
+}
+
+module.exports = {
+  pool,
+  query,
+  initDb,
+};
