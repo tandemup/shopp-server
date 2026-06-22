@@ -1,10 +1,19 @@
+require("dotenv").config();
+
 const { Pool } = require("pg");
 
-const isProduction = process.env.NODE_ENV === "production";
+if (!process.env.DATABASE_URL) {
+  console.error("Falta DATABASE_URL en las variables de entorno");
+  process.exit(1);
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: isProduction ? { rejectUnauthorized: false } : false,
+  ssl:
+    process.env.DATABASE_URL.includes("localhost") ||
+    process.env.DATABASE_URL.includes("127.0.0.1")
+      ? false
+      : { rejectUnauthorized: false },
 });
 
 module.exports = pool;

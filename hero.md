@@ -26,3 +26,19 @@ Continuous Protection: On
 Add-on: postgresql-concentric-39738
 
 joshnash@MacBook-Aria shopp-server %
+
+## Comprueba si tu app tiene PostgreSQL
+
+heroku addons -a shopp-server
+
+## O tambien asi
+
+heroku pg:info -a shopp-server
+
+## Si no aparece una base de datos, tienes que crearla:
+
+heroku addons:create heroku-postgresql:essential-0 -a shopp-server
+
+## Despues comprueba
+
+heroku config:get DATABASE_URL -a shopp-server

@@ -2,9 +2,6 @@
 
 # dependencies
 node_modules/
-secrets.txt
-old/
-secret.md
 md/
 
 # Variables locales de entorno
