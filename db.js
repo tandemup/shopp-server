@@ -33,6 +33,8 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created_at
     ON chat_messages (room, created_at DESC);
   `);
+
+  console.log("Database initialized");
 }
 
 module.exports = {

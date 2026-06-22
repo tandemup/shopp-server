@@ -20,4 +20,4 @@ VALUES
 
 SELECT id, room, username, text, created_at
 FROM chat_messages
-ORDER BY created_at ASC;
+ORDER BY id ASC;
