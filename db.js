@@ -3,11 +3,35 @@ require("dotenv").config();
 
 const { Pool } = require("pg");
 
-const isProduction = process.env.NODE_ENV === "production";
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  console.warn(
+    "Falta DATABASE_URL. Define DATABASE_URL en .env local o en las variables de Heroku.",
+  );
+}
+
+function shouldUseSsl(connectionString = "") {
+  if (!connectionString) return false;
+
+  const normalized = connectionString.toLowerCase();
+
+  // En local normalmente NO usamos SSL.
+  if (
+    normalized.includes("localhost") ||
+    normalized.includes("127.0.0.1") ||
+    normalized.includes("::1")
+  ) {
+    return false;
+  }
+
+  // Heroku Postgres y la mayoría de bases remotas exigen SSL.
+  return true;
+}
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProduction
+  connectionString: databaseUrl,
+  ssl: shouldUseSsl(databaseUrl)
     ? {
         rejectUnauthorized: false,
       }
