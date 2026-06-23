@@ -4,7 +4,8 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const { Pool } = require("pg");
+
+const { query, initDb } = require("./db");
 
 const app = express();
 const server = http.createServer(app);
@@ -26,7 +27,7 @@ const allowedOrigins = (
 
 const corsOptions = {
   origin(origin, callback) {
-    // Permite herramientas sin Origin: Thunder Client, Postman, curl, health checks, etc.
+    // Permite Thunder Client, Postman, curl, health checks, etc.
     if (!origin) {
       return callback(null, true);
     }
@@ -42,40 +43,11 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+
+// NO uses esto con Express/router actual:
+// app.options("*", cors(corsOptions));
 
 app.use(express.json());
-
-// -----------------------------------------------------------------------------
-// PostgreSQL
-// -----------------------------------------------------------------------------
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl:
-    process.env.NODE_ENV === "production"
-      ? { rejectUnauthorized: false }
-      : false,
-});
-
-async function initDatabase() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS chat_messages (
-      id SERIAL PRIMARY KEY,
-      room TEXT NOT NULL DEFAULT 'general',
-      username TEXT NOT NULL DEFAULT 'Usuario',
-      text TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created_at
-    ON chat_messages (room, created_at);
-  `);
-
-  console.log("Base de datos inicializada");
-}
 
 // -----------------------------------------------------------------------------
 // Socket.io
@@ -101,14 +73,14 @@ io.on("connection", (socket) => {
   socket.on("chatMessage", async (payload = {}) => {
     try {
       const room = payload.room || "general";
-      const username = payload.username || "Usuario";
+      const username = payload.username || "anonymous";
       const text = String(payload.text || "").trim();
 
       if (!text) {
         return;
       }
 
-      const result = await pool.query(
+      const result = await query(
         `
         INSERT INTO chat_messages (room, username, text)
         VALUES ($1, $2, $3)
@@ -127,6 +99,7 @@ io.on("connection", (socket) => {
       io.to(room).emit("chatMessage", savedMessage);
     } catch (error) {
       console.error("Error guardando mensaje de chat:", error);
+
       socket.emit("chatError", {
         message: "No se pudo guardar el mensaje",
       });
@@ -162,7 +135,7 @@ app.get("/api/messages", async (req, res) => {
     const room = req.query.room || "general";
     const limit = Math.min(Number(req.query.limit) || 50, 200);
 
-    const result = await pool.query(
+    const result = await query(
       `
       SELECT
         id,
@@ -196,7 +169,7 @@ app.get("/api/messages", async (req, res) => {
 app.post("/api/messages", async (req, res) => {
   try {
     const room = req.body.room || "general";
-    const username = req.body.username || "Usuario";
+    const username = req.body.username || "anonymous";
     const text = String(req.body.text || "").trim();
 
     if (!text) {
@@ -206,7 +179,7 @@ app.post("/api/messages", async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const result = await query(
       `
       INSERT INTO chat_messages (room, username, text)
       VALUES ($1, $2, $3)
@@ -242,7 +215,7 @@ app.post("/api/messages", async (req, res) => {
 // Start
 // -----------------------------------------------------------------------------
 
-initDatabase()
+initDb()
   .then(() => {
     server.listen(PORT, () => {
       console.log(`Servidor escuchando en puerto ${PORT}`);
