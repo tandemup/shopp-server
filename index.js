@@ -1,123 +1,139 @@
-require("dotenv").config();
+import express from "express";
+import cors from "cors";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import dotenv from "dotenv";
 
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const { Server } = require("socket.io");
+import { query, initDb } from "./db.js";
 
-const { query, initDb } = require("./db");
+dotenv.config();
 
 const app = express();
+const server = createServer(app);
 
 const PORT = process.env.PORT || 3000;
-const DATABASE_URL = process.env.DATABASE_URL;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "*";
 
-// ----------------------------------------------------
-// Middleware
-// ----------------------------------------------------
+/**
+ * CLIENT_ORIGIN puede tener una o varias URLs separadas por coma:
+ *
+ * CLIENT_ORIGIN=http://localhost:8081,https://ramworks.netlify.app
+ *
+ * También se acepta CLIENT_URL como compatibilidad anterior.
+ */
+function getAllowedOrigins() {
+  const rawOrigins = process.env.CLIENT_ORIGIN || process.env.CLIENT_URL || "";
 
-app.use(
-  cors({
-    origin: CLIENT_ORIGIN === "*" ? true : CLIENT_ORIGIN,
-    credentials: true,
-  }),
-);
-
-app.use(express.json());
-
-// ----------------------------------------------------
-// Avisos de configuración
-// ----------------------------------------------------
-
-if (!DATABASE_URL) {
-  console.warn("WARNING: Falta DATABASE_URL. La API no podrá usar PostgreSQL.");
+  return rawOrigins
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 }
 
-console.log("CLIENT_ORIGIN:", CLIENT_ORIGIN);
+const allowedOrigins = getAllowedOrigins();
 
-// ----------------------------------------------------
-// API REST
-// ----------------------------------------------------
+function isOriginAllowed(origin) {
+  // Permite llamadas sin origin, por ejemplo curl, Thunder Client o health checks.
+  if (!origin) {
+    return true;
+  }
 
+  return allowedOrigins.includes(origin);
+}
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (isOriginAllowed(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origen no permitido por CORS: ${origin}`));
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
+const io = new Server(server, {
+  cors: corsOptions,
+});
+
+/**
+ * Ruta de prueba.
+ */
 app.get("/", (req, res) => {
   res.json({
     ok: true,
     name: "shopp-server",
-    message: "API funcionando",
+    allowedOrigins,
   });
 });
 
-app.get("/api/health", async (req, res) => {
-  try {
-    let database = "not_configured";
-
-    if (DATABASE_URL) {
-      const result = await query("SELECT NOW() AS now");
-
-      database = {
-        ok: true,
-        now: result.rows[0].now,
-      };
-    }
-
-    res.json({
-      ok: true,
-      server: "running",
-      database,
-    });
-  } catch (error) {
-    console.error("GET /api/health error:", error);
-
-    res.status(500).json({
-      ok: false,
-      error: "Database connection failed",
-      detail: error.message,
-    });
-  }
+/**
+ * Health check.
+ */
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    status: "running",
+  });
 });
 
+/**
+ * Obtener mensajes de una sala.
+ *
+ * Ejemplo:
+ * GET /api/messages?room=general
+ */
 app.get("/api/messages", async (req, res) => {
   try {
-    const room = req.query.room || "general";
+    const room = String(req.query.room || "general").trim() || "general";
 
     const result = await query(
       `
       SELECT id, room, username, text, created_at
       FROM chat_messages
       WHERE room = $1
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC
       LIMIT 100
       `,
       [room],
     );
 
-    res.json({
-      ok: true,
-      room,
-      messages: result.rows,
-    });
+    res.json(result.rows);
   } catch (error) {
-    console.error("GET /api/messages error:", error);
-
+    console.error("Error obteniendo mensajes:", error);
     res.status(500).json({
       ok: false,
-      error: "Could not fetch messages",
-      detail: error.message,
+      error: "No se pudieron obtener los mensajes",
     });
   }
 });
 
+/**
+ * Crear mensaje por API REST.
+ * Opcional, pero útil para pruebas con Thunder Client.
+ *
+ * POST /api/messages
+ *
+ * Body:
+ * {
+ *   "room": "general",
+ *   "username": "Josh",
+ *   "text": "Hola"
+ * }
+ */
 app.post("/api/messages", async (req, res) => {
   try {
-    const room = req.body.room || "general";
-    const username = req.body.username || "anonymous";
-    const text = req.body.text;
+    const room = String(req.body.room || "general").trim() || "general";
+    const username =
+      String(req.body.username || "anonymous").trim() || "anonymous";
+    const text = String(req.body.text || "").trim();
 
-    if (!text || !text.trim()) {
+    if (!text) {
       return res.status(400).json({
         ok: false,
-        error: "text is required",
+        error: "El mensaje no puede estar vacío",
       });
     }
 
@@ -127,232 +143,97 @@ app.post("/api/messages", async (req, res) => {
       VALUES ($1, $2, $3)
       RETURNING id, room, username, text, created_at
       `,
-      [room, username, text.trim()],
+      [room, username, text],
     );
 
     const message = result.rows[0];
 
     io.to(room).emit("chat:message", message);
 
-    res.status(201).json({
-      ok: true,
-      message,
-    });
+    res.status(201).json(message);
   } catch (error) {
-    console.error("POST /api/messages error:", error);
-
+    console.error("Error creando mensaje:", error);
     res.status(500).json({
       ok: false,
-      error: "Could not create message",
-      detail: error.message,
+      error: "No se pudo crear el mensaje",
     });
   }
 });
 
-app.delete("/api/messages/:id", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-
-    if (!Number.isInteger(id)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid message id",
-      });
-    }
-
-    const result = await query(
-      `
-      DELETE FROM chat_messages
-      WHERE id = $1
-      RETURNING id, room, username, text, created_at
-      `,
-      [id],
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({
-        ok: false,
-        error: "Message not found",
-      });
-    }
-
-    res.json({
-      ok: true,
-      deleted: result.rows[0],
-    });
-  } catch (error) {
-    console.error("DELETE /api/messages/:id error:", error);
-
-    res.status(500).json({
-      ok: false,
-      error: "Could not delete message",
-      detail: error.message,
-    });
-  }
-});
-
-// ----------------------------------------------------
-// Endpoint temporal de desarrollo
-// ----------------------------------------------------
-
-app.post("/api/dev/reset-test-db", async (req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({
-      ok: false,
-      error: "Endpoint disabled in production",
-    });
-  }
-
-  try {
-    await query(`
-      DROP TABLE IF EXISTS chat_messages;
-    `);
-
-    await query(`
-      CREATE TABLE chat_messages (
-        id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-        room TEXT NOT NULL DEFAULT 'general',
-        username TEXT NOT NULL DEFAULT 'anonymous',
-        text TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-
-    await query(`
-      CREATE INDEX IF NOT EXISTS idx_chat_messages_room_created_at
-      ON chat_messages (room, created_at DESC);
-    `);
-
-    await query(
-      `
-      INSERT INTO chat_messages (room, username, text)
-      VALUES
-        ($1, $2, $3),
-        ($4, $5, $6),
-        ($7, $8, $9),
-        ($10, $11, $12)
-      `,
-      [
-        "general",
-        "Josh",
-        "Mensaje de prueba 1 desde Thunder Client",
-
-        "general",
-        "Ana",
-        "Mensaje de prueba 2 desde Thunder Client",
-
-        "soporte",
-        "Admin",
-        "Mensaje de prueba en la sala soporte",
-
-        "shopp",
-        "Josh",
-        "Probando la sala shopp",
-      ],
-    );
-
-    const result = await query(`
-      SELECT id, room, username, text, created_at
-      FROM chat_messages
-      ORDER BY id ASC;
-    `);
-
-    res.json({
-      ok: true,
-      message: "Base de datos de prueba creada correctamente",
-      count: result.rowCount,
-      rows: result.rows,
-    });
-  } catch (error) {
-    console.error("POST /api/dev/reset-test-db error:", error);
-
-    res.status(500).json({
-      ok: false,
-      error: "Could not reset test database",
-      detail: error.message,
-    });
-  }
-});
-
-// ----------------------------------------------------
-// Socket.io
-// ----------------------------------------------------
-
-const server = http.createServer(app);
-
-const io = new Server(server, {
-  cors: {
-    origin: CLIENT_ORIGIN === "*" ? true : CLIENT_ORIGIN,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
-
+/**
+ * Socket.IO chat.
+ */
 io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
+  console.log("Socket conectado:", socket.id);
 
-  socket.on(
-    "chat:join",
-    ({ room = "general", username = "anonymous" } = {}) => {
-      socket.join(room);
+  socket.on("chat:join", (payload = {}) => {
+    const room = String(payload.room || "general").trim() || "general";
+    const username =
+      String(payload.username || "anonymous").trim() || "anonymous";
 
-      socket.emit("chat:joined", {
-        ok: true,
-        room,
-        username,
-      });
-    },
-  );
+    socket.data.room = room;
+    socket.data.username = username;
 
-  socket.on(
-    "chat:message",
-    async ({ room = "general", username = "anonymous", text }) => {
-      try {
-        if (!text || !text.trim()) return;
+    socket.join(room);
 
-        const result = await query(
-          `
-          INSERT INTO chat_messages (room, username, text)
-          VALUES ($1, $2, $3)
-          RETURNING id, room, username, text, created_at
-          `,
-          [room, username, text.trim()],
-        );
+    console.log(`${username} entró en la sala ${room}`);
+  });
 
-        const message = result.rows[0];
+  socket.on("chat:message", async (payload = {}) => {
+    try {
+      const room =
+        String(payload.room || socket.data.room || "general").trim() ||
+        "general";
 
-        io.to(room).emit("chat:message", message);
-      } catch (error) {
-        console.error("socket chat:message error:", error);
+      const username =
+        String(
+          payload.username || socket.data.username || "anonymous",
+        ).trim() || "anonymous";
 
-        socket.emit("chat:error", {
-          ok: false,
-          error: "Could not save message",
-          detail: error.message,
-        });
+      const text = String(payload.text || "").trim();
+
+      if (!text) {
+        return;
       }
-    },
-  );
+
+      const result = await query(
+        `
+        INSERT INTO chat_messages (room, username, text)
+        VALUES ($1, $2, $3)
+        RETURNING id, room, username, text, created_at
+        `,
+        [room, username, text],
+      );
+
+      const message = result.rows[0];
+
+      io.to(room).emit("chat:message", message);
+    } catch (error) {
+      console.error("Error guardando mensaje de socket:", error);
+
+      socket.emit("chat:error", {
+        error: "No se pudo guardar el mensaje",
+      });
+    }
+  });
 
   socket.on("disconnect", () => {
-    console.log("Socket disconnected:", socket.id);
+    console.log("Socket desconectado:", socket.id);
   });
 });
 
-// ----------------------------------------------------
-// Start
-// ----------------------------------------------------
-
-initDb()
-  .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error("Database initialization failed:", error);
+async function startServer() {
+  try {
+    await initDb();
 
     server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT} without database init`);
+      console.log(`Servidor escuchando en puerto ${PORT}`);
+      console.log("Allowed origins:", allowedOrigins);
     });
-  });
+  } catch (error) {
+    console.error("No se pudo iniciar el servidor:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
